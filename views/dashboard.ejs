@@ -73,14 +73,26 @@
       border-radius: 6px;
       box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
     }
-    li a {
-      color: #2a9d8f;
-      text-decoration: none;
-      font-weight: 500;
+    li span {
+      color: #ffffff;
+      font-weight: 400;
+      flex-grow: 1;
+      text-align: left;
     }
-    li a:hover {
-      text-decoration: underline;
-      color: #47c3b2;
+    .download-btn {
+      background: linear-gradient(45deg, #2a9d8f, #264653);
+      color: #ffffff;
+      padding: 6px 12px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.3s ease;
+      font-weight: 500;
+      text-decoration: none;
+      margin-right: 10px;
+    }
+    .download-btn:hover {
+      background: linear-gradient(45deg, #264653, #2a9d8f);
     }
     .delete-btn {
       background-color: #9b2226;
@@ -119,7 +131,8 @@
     <ul>
       <% files.forEach(file => { %>
         <li>
-          <a href="/file/<%= file.binaryId %>"><%= file.filename %></a>
+          <span><%= file.filename %></span>
+          <a href="/file/<%= file.binaryId %>" class="download-btn">Download</a>
           <form action="/delete/<%= file.id %>" method="POST">
             <button type="submit" class="delete-btn">Delete</button>
           </form>
