@@ -1,6 +1,8 @@
 const { createClient } = require('@libsql/client');
      const express = require('express');
      const session = require('express-session');
+     const KnexSessionStore = require('connect-session-knex')(session);
+     const knex = require('knex');
      const multer = require('multer');
      const path = require('path');
      const fs = require('fs');
@@ -8,8 +10,28 @@ const { createClient } = require('@libsql/client');
 
      // Initialize Turso client
      const db = createClient({
-       url: 'libsql://file-share-db-jelpsIT.turso.io', // Replace with your Turso DB URL
-       authToken: 'YOUR_TOKEN' // Replace with your Turso auth token
+       url: process.env.TURSO_DATABASE_URL || 'libsql://file-share-db-jelpsIT.turso.io', // Use env variable
+       authToken: process.env.TURSO_AUTH_TOKEN || 'YOUR_TOKEN' // Use env variable
+     });
+
+     // Initialize Knex for session store
+     const knexInstance = knex({
+       client: 'sqlite3', // Turso uses SQLite-compatible protocol
+       connection: {
+         host: process.env.TURSO_DATABASE_URL,
+         user: '',
+         password: process.env.TURSO_AUTH_TOKEN,
+         database: ''
+       },
+       useNullAsDefault: true
+     });
+
+     // Configure session store
+     const store = new KnexSessionStore({
+       knex: knexInstance,
+       tablename: 'sessions',
+       createtable: true,
+       clearInterval: 1000 * 60 * 60 // Clear expired sessions every hour
      });
 
      // Initialize database tables
@@ -40,13 +62,20 @@ const { createClient } = require('@libsql/client');
      app.use(session({
        secret: 'secret-key',
        resave: false,
-       saveUninitialized: false
+       saveUninitialized: false,
+       store: store
      }));
-     app.use(express.static('uploads'));
+
+     // Create /tmp/uploads if it doesn't exist
+     const uploadDir = '/tmp/uploads';
+     if (!fs.existsSync(uploadDir)) {
+       fs.mkdirSync(uploadDir, { recursive: true });
+     }
+     app.use(express.static(uploadDir));
 
      // Multer for file uploads
      const storage = multer.diskStorage({
-       destination: './uploads/',
+       destination: uploadDir,
        filename: (req, file, cb) => {
          const uniqueSuffix = Math.random().toString(36).substring(2, 8);
          const ext = path.extname(file.originalname);
@@ -106,7 +135,7 @@ const { createClient } = require('@libsql/client');
        });
        if (result.rows.length > 0) {
          const file = result.rows[0];
-         const filePath = path.join(__dirname, 'Uploads', file.filepath);
+         const filePath = path.join(uploadDir, file.filepath);
          res.setHeader('Content-Disposition', `attachment; filename="${file.filename}"`);
          res.download(filePath, file.filename, (err) => {
            if (err) console.error('Download error:', err);
@@ -124,7 +153,7 @@ const { createClient } = require('@libsql/client');
        });
        if (result.rows.length > 0) {
          const file = result.rows[0];
-         fs.unlink(path.join(__dirname, 'Uploads', file.filepath), (err) => {
+         fs.unlink(path.join(uploadDir, file.filepath), (err) => {
            if (err) console.error('Error deleting file:', err);
            db.execute({
              sql: `DELETE FROM files WHERE id = ?`,
@@ -141,4 +170,4 @@ const { createClient } = require('@libsql/client');
        res.redirect('/login');
      });
 
-     app.listen(3000, () => console.log('Server running on http://localhost:3000'));
+     app.listen(process.env.PORT || 3000, () => console.log('Server running'));
