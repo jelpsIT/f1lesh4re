@@ -1,5 +1,4 @@
-const sqlite3 = require('sqlite3').verbose();
-     const db = new sqlite3.Database('database.db');
+const { createClient } = require('@libsql/client');
      const express = require('express');
      const session = require('express-session');
      const multer = require('multer');
@@ -7,19 +6,33 @@ const sqlite3 = require('sqlite3').verbose();
      const fs = require('fs');
      const app = express();
 
-     db.serialize(() => {
-       db.run(`CREATE TABLE IF NOT EXISTS users (
-         id INTEGER PRIMARY KEY AUTOINCREMENT,
-         username TEXT UNIQUE,
-         password TEXT
-       )`);
-       db.run(`CREATE TABLE IF NOT EXISTS files (
-         id INTEGER PRIMARY KEY AUTOINCREMENT,
-         filename TEXT,
-         filepath TEXT
-       )`);
-       db.run(`INSERT OR IGNORE INTO users (username, password) VALUES (?, ?)`, ['test', 'test']);
+     // Initialize Turso client
+     const db = createClient({
+       url: 'libsql://file-share-db-jelpsIT.turso.io', // Replace with your Turso DB URL
+       authToken: 'YOUR_TOKEN' // Replace with your Turso auth token
      });
+
+     // Initialize database tables
+     async function initializeDatabase() {
+       await db.execute(`
+         CREATE TABLE IF NOT EXISTS users (
+           id INTEGER PRIMARY KEY AUTOINCREMENT,
+           username TEXT UNIQUE,
+           password TEXT
+         )
+       `);
+       await db.execute(`
+         CREATE TABLE IF NOT EXISTS files (
+           id INTEGER PRIMARY KEY AUTOINCREMENT,
+           filename TEXT,
+           filepath TEXT
+         )
+       `);
+       await db.execute(`
+         INSERT OR IGNORE INTO users (username, password) VALUES (?, ?)
+       `, ['test', 'test']);
+     }
+     initializeDatabase().catch(console.error);
 
      // Middleware
      app.set('view engine', 'ejs');
@@ -52,67 +65,75 @@ const sqlite3 = require('sqlite3').verbose();
      // Routes
      app.get('/login', (req, res) => res.render('login'));
 
-     app.post('/login', (req, res) => {
+     app.post('/login', async (req, res) => {
        const { username, password } = req.body;
-       db.get(`SELECT * FROM users WHERE username = ? AND password = ?`, [username, password], (err, user) => {
-         if (user) {
-           req.session.user = user;
-           res.redirect('/dashboard');
-         } else {
-           res.redirect('/login');
-         }
+       const result = await db.execute({
+         sql: `SELECT * FROM users WHERE username = ? AND password = ?`,
+         args: [username, password]
        });
-     });
-
-     app.get('/dashboard', isAuthenticated, (req, res) => {
-       db.all(`SELECT id, filename FROM files`, [], (err, files) => {
-         if (err) console.error('Database error:', err);
-         const filesWithBinaryId = files.map(file => ({
-           ...file,
-           binaryId: file.id.toString(2)
-         }));
-         console.log('Files:', filesWithBinaryId);
-         res.render('dashboard', { user: req.session.user, files: filesWithBinaryId || [] });
-       });
-     });
-
-     app.post('/upload', isAuthenticated, upload.single('file'), (req, res) => {
-       db.run(`INSERT INTO files (filename, filepath) VALUES (?, ?)`, [req.file.originalname, req.file.filename], () => {
+       if (result.rows.length > 0) {
+         req.session.user = result.rows[0];
          res.redirect('/dashboard');
-       });
+       } else {
+         res.redirect('/login');
+       }
      });
 
-     app.get('/file/:binaryId', isAuthenticated, (req, res) => {
+     app.get('/dashboard', isAuthenticated, async (req, res) => {
+       const result = await db.execute(`SELECT id, filename FROM files`);
+       const filesWithBinaryId = result.rows.map(file => ({
+         ...file,
+         binaryId: file.id.toString(2)
+       }));
+       console.log('Files:', filesWithBinaryId);
+       res.render('dashboard', { user: req.session.user, files: filesWithBinaryId || [] });
+     });
+
+     app.post('/upload', isAuthenticated, upload.single('file'), async (req, res) => {
+       await db.execute({
+         sql: `INSERT INTO files (filename, filepath) VALUES (?, ?)`,
+         args: [req.file.originalname, req.file.filename]
+       });
+       res.redirect('/dashboard');
+     });
+
+     app.get('/file/:binaryId', isAuthenticated, async (req, res) => {
        const binaryId = req.params.binaryId;
        const id = parseInt(binaryId, 2);
-       db.get(`SELECT filepath, filename FROM files WHERE id = ?`, [id], (err, file) => {
-         if (err) console.error('Database error:', err);
-         if (file) {
-           const filePath = path.join(__dirname, 'Uploads', file.filepath);
-           res.setHeader('Content-Disposition', `attachment; filename="${file.filename}"`);
-           res.download(filePath, file.filename, (err) => {
-             if (err) console.error('Download error:', err);
-           });
-         } else {
-           res.status(404).send('File not found');
-         }
+       const result = await db.execute({
+         sql: `SELECT filepath, filename FROM files WHERE id = ?`,
+         args: [id]
        });
+       if (result.rows.length > 0) {
+         const file = result.rows[0];
+         const filePath = path.join(__dirname, 'Uploads', file.filepath);
+         res.setHeader('Content-Disposition', `attachment; filename="${file.filename}"`);
+         res.download(filePath, file.filename, (err) => {
+           if (err) console.error('Download error:', err);
+         });
+       } else {
+         res.status(404).send('File not found');
+       }
      });
 
-     app.post('/delete/:id', isAuthenticated, (req, res) => {
+     app.post('/delete/:id', isAuthenticated, async (req, res) => {
        const id = req.params.id;
-       db.get(`SELECT filepath FROM files WHERE id = ?`, [id], (err, file) => {
-         if (file) {
-           fs.unlink(path.join(__dirname, 'Uploads', file.filepath), (err) => {
-             if (err) console.error('Error deleting file:', err);
-             db.run(`DELETE FROM files WHERE id = ?`, [id], () => {
-               res.redirect('/dashboard');
-             });
-           });
-         } else {
-           res.redirect('/dashboard');
-         }
+       const result = await db.execute({
+         sql: `SELECT filepath FROM files WHERE id = ?`,
+         args: [id]
        });
+       if (result.rows.length > 0) {
+         const file = result.rows[0];
+         fs.unlink(path.join(__dirname, 'Uploads', file.filepath), (err) => {
+           if (err) console.error('Error deleting file:', err);
+           db.execute({
+             sql: `DELETE FROM files WHERE id = ?`,
+             args: [id]
+           }).then(() => res.redirect('/dashboard'));
+         });
+       } else {
+         res.redirect('/dashboard');
+       }
      });
 
      app.get('/logout', (req, res) => {
